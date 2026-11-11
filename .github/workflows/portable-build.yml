@@ -1,0 +1,37 @@
+name: Portable builds
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: windows-2022
+            target: windows-x86_64
+          - os: macos-15-intel
+            target: macos-intel
+          - os: macos-15
+            target: macos-apple-silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m unittest discover -s tests
+      - run: python build_portable.py portable-output
+      - name: Archive portable game
+        shell: bash
+        run: |
+          cd portable-output/dist
+          python -m zipfile -c "../../TextGame-${{ matrix.target }}.zip" TextGame
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TextGame-${{ matrix.target }}
+          path: TextGame-${{ matrix.target }}.zip
