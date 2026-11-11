@@ -1,23 +1,11 @@
-name: Portable builds
+name: Windows USB installer
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: linux-x86_64
-          - os: windows-2022
-            target: windows-x86_64
-          - os: macos-15-intel
-            target: macos-intel
-          - os: macos-15
-            target: macos-apple-silicon
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,12 +14,30 @@ jobs:
       - run: python -m pip install -r requirements-build.txt
       - run: python -m unittest discover -s tests
       - run: python build_portable.py portable-output
-      - name: Archive portable game
-        shell: bash
+      - name: Archive Windows game
         run: |
           cd portable-output/dist
-          python -m zipfile -c "../../TextGame-${{ matrix.target }}.zip" TextGame
+          python -m zipfile -c "../../TextGame-windows-x86_64.zip" TextGame
+      - name: Build USB installer
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --windowed
+          --name InstallTextGameToUSB
+          --distpath portable-output/installer
+          --workpath portable-output/installer-build
+          --specpath portable-output/specs
+          --add-data "TextGame-windows-x86_64.zip;."
+          install_usb.py
+      - name: Test packaged installer
+        shell: pwsh
+        run: |
+          $usb = Join-Path $env:RUNNER_TEMP "textgame-test-usb"
+          New-Item -ItemType Directory -Path $usb | Out-Null
+          $process = Start-Process -FilePath (Resolve-Path "portable-output/installer/InstallTextGameToUSB.exe") -ArgumentList "`"$usb`"" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)" }
+          if (-not (Test-Path "$usb/TextGameUSB/Play on Windows.bat")) { throw "Launcher missing" }
+          if (-not (Test-Path "$usb/TextGameUSB/Windows/TextGame/TextGame.exe")) { throw "Game missing" }
+          if (-not (Test-Path "$usb/TextGameUSB/Windows/TextGame/Chapter8/Chapter8.exe")) { throw "Chapter 8 missing" }
       - uses: actions/upload-artifact@v4
         with:
-          name: TextGame-${{ matrix.target }}
-          path: TextGame-${{ matrix.target }}.zip
+          name: Windows-USB-installer
+          path: portable-output/installer/InstallTextGameToUSB.exe

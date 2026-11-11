@@ -1,16 +1,11 @@
 import argparse
-import os
 from pathlib import Path, PurePosixPath
 import stat
+import sys
 import zipfile
 
 
-TARGETS = {
-    "windows": ("Windows", "TextGame.exe", "Chapter8/Chapter8.exe"),
-    "linux": ("Linux", "TextGame", "Chapter8/Chapter8"),
-    "mac-intel": ("Mac-Intel", "TextGame", "Chapter8/Chapter8"),
-    "mac-apple": ("Mac-Apple", "TextGame", "Chapter8/Chapter8"),
-}
+BUILD_ARCHIVE = "TextGame-windows-x86_64.zip"
 
 WINDOWS_LAUNCHER = r"""@echo off
 set "GAME=%~dp0Windows\TextGame\TextGame.exe"
@@ -27,35 +22,7 @@ if errorlevel 1 (
 )
 """
 
-LINUX_LAUNCHER = """#!/bin/sh
-set -eu
-base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-game="$base/Linux/TextGame/TextGame"
-if [ ! -f "$game" ]; then
-    echo "Linux game not found: $game" >&2
-    exit 1
-fi
-exec "$game"
-"""
-
-MAC_LAUNCHER = """#!/bin/sh
-set -eu
-base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-case "$(uname -m)" in
-    arm64) platform=Mac-Apple ;;
-    x86_64) platform=Mac-Intel ;;
-    *) echo "Unsupported Mac architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-game="$base/$platform/TextGame/TextGame"
-if [ ! -f "$game" ]; then
-    echo "Game for $platform not found: $game" >&2
-    exit 1
-fi
-exec "$game"
-"""
-
-
-def validate_archive(archive, target):
+def validate_archive(archive):
     seen = {}
     for info in archive.infolist():
         name = info.filename
@@ -69,66 +36,77 @@ def validate_archive(archive, target):
         if normalized in seen:
             raise ValueError(f"Duplicate archive path: {name!r}")
         seen[normalized] = info
-    _, game, chapter8 = TARGETS[target]
-    for required in (f"TextGame/{game}", f"TextGame/{chapter8}"):
+    for required in ("TextGame/TextGame.exe", "TextGame/Chapter8/Chapter8.exe"):
         if required not in seen or seen[required].is_dir():
-            raise ValueError(f"{target} archive is missing {required}")
+            raise ValueError(f"Windows archive is missing {required}")
 
 
-def install(usb, builds):
+def install(usb, build):
     if not usb.is_dir():
         raise ValueError(f"USB destination must be an existing directory: {usb}")
-    if not builds:
-        raise ValueError("Select at least one platform build")
     destination = usb / "TextGameUSB"
     if destination.exists():
         raise FileExistsError(f"Destination already exists; saves will not be overwritten: {destination}")
 
-    # Validate all inputs before creating anything on the destination.
-    for target, path in builds.items():
-        with zipfile.ZipFile(path) as archive:
-            validate_archive(archive, target)
-
-    destination.mkdir()
-    for target, path in builds.items():
-        folder = destination / TARGETS[target][0]
+    with zipfile.ZipFile(build) as archive:
+        validate_archive(archive)
+        destination.mkdir()
+        folder = destination / "Windows"
         folder.mkdir()
-        with zipfile.ZipFile(path) as archive:
-            for info in archive.infolist():
-                extracted = Path(archive.extract(info, folder))
-                if not info.is_dir() and info.external_attr >> 16 & 0o111:
-                    extracted.chmod(extracted.stat().st_mode | 0o111)
+        archive.extractall(folder)
 
-    launchers = []
-    if "windows" in builds:
-        launchers.append(("Play on Windows.bat", WINDOWS_LAUNCHER, False))
-    if "linux" in builds:
-        launchers.append(("Play on Linux.sh", LINUX_LAUNCHER, True))
-    if "mac-intel" in builds or "mac-apple" in builds:
-        launchers.append(("Play on Mac.command", MAC_LAUNCHER, True))
-    for name, content, executable in launchers:
-        path = destination / name
-        if name.endswith(".bat"):
-            path.write_bytes(content.replace("\n", "\r\n").encode("utf-8"))
-        else:
-            path.write_text(content, encoding="utf-8")
-        if executable:
-            path.chmod(path.stat().st_mode | 0o111)
+    (destination / "Play on Windows.bat").write_bytes(
+        WINDOWS_LAUNCHER.replace("\n", "\r\n").encode("utf-8")
+    )
     return destination
+
+
+def bundled_archive():
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / BUILD_ARCHIVE
+
+
+def install_with_window():
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        usb = filedialog.askdirectory(
+            parent=root, title="Select your USB drive", mustexist=True
+        )
+        if not usb:
+            return
+        try:
+            destination = install(Path(usb), bundled_archive())
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            messagebox.showerror("Installation failed", str(exc), parent=root)
+        else:
+            messagebox.showinfo(
+                "Installation complete",
+                f"Installed to {destination}\n\n"
+                "Open that folder and double-click Play on Windows.bat to play.",
+                parent=root,
+            )
+    finally:
+        root.destroy()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Install downloaded portable build ZIPs onto a USB drive."
+        description="Install the Windows game onto a USB drive."
     )
-    parser.add_argument("usb", type=Path, help="Existing USB drive directory")
-    for target in TARGETS:
-        parser.add_argument(f"--{target}", type=Path, metavar="ZIP")
+    parser.add_argument("usb", type=Path, nargs="?", help="Existing USB drive directory")
+    parser.add_argument("--windows", type=Path, metavar="ZIP", help="Windows build ZIP")
     args = parser.parse_args()
-    builds = {target: getattr(args, target.replace("-", "_"))
-              for target in TARGETS if getattr(args, target.replace("-", "_")) is not None}
+    if args.usb is None:
+        if args.windows is not None:
+            parser.error("--windows requires a USB destination")
+        install_with_window()
+        return
     try:
-        destination = install(args.usb, builds)
+        destination = install(args.usb, args.windows or bundled_archive())
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         parser.exit(1, f"Installation failed: {exc}\n")
     print(f"Installed to {destination}")

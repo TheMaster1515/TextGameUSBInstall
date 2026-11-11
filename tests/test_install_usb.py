@@ -1,8 +1,9 @@
-import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 import zipfile
 
 import install_usb
@@ -16,54 +17,24 @@ class UsbInstallTests(unittest.TestCase):
         self.usb = self.root / "USB drive"
         self.usb.mkdir()
 
-    def make_archive(self, target):
-        path = self.root / f"{target}.zip"
-        _, game, chapter8 = install_usb.TARGETS[target]
+    def make_archive(self):
+        path = self.root / "windows.zip"
         with zipfile.ZipFile(path, "w") as archive:
-            for name in (game, chapter8):
-                info = zipfile.ZipInfo(f"TextGame/{name}")
-                info.create_system = 3
-                info.external_attr = (0o100755 << 16)
-                archive.writestr(info, '#!/bin/sh\nprintf "launched:%s" "$0"\n')
+            archive.writestr("TextGame/TextGame.exe", b"game")
+            archive.writestr("TextGame/Chapter8/Chapter8.exe", b"chapter8")
             archive.writestr("TextGame/images/background.jpg", b"asset")
         return path
 
-    def test_installs_all_platforms_and_preserves_existing_files(self):
+    def test_installs_windows_game_and_preserves_existing_files(self):
         marker = self.usb / "keep.txt"
         marker.write_text("keep")
-        builds = {target: self.make_archive(target) for target in install_usb.TARGETS}
-        result = install_usb.install(self.usb, builds)
-        for target, (folder, game, chapter8) in install_usb.TARGETS.items():
-            self.assertTrue((result / folder / "TextGame" / game).is_file(), target)
-            self.assertTrue((result / folder / "TextGame" / chapter8).is_file(), target)
-        for launcher in ("Play on Windows.bat", "Play on Linux.sh", "Play on Mac.command"):
-            self.assertTrue((result / launcher).is_file())
+        result = install_usb.install(self.usb, self.make_archive())
+        self.assertTrue((result / "Windows/TextGame/TextGame.exe").is_file())
+        self.assertTrue((result / "Windows/TextGame/Chapter8/Chapter8.exe").is_file())
+        launcher = (result / "Play on Windows.bat").read_bytes()
+        self.assertIn(b'%~dp0Windows\\TextGame\\TextGame.exe', launcher)
+        self.assertIn(b"\r\n", launcher)
         self.assertEqual(marker.read_text(), "keep")
-        self.assertIn(b"\r\n", (result / "Play on Windows.bat").read_bytes())
-
-    @unittest.skipIf(os.name == "nt", "Unix launchers require a Unix shell")
-    def test_linux_launcher_runs_from_another_working_directory(self):
-        result = install_usb.install(self.usb, {"linux": self.make_archive("linux")})
-        game = result / "Linux" / "TextGame" / "TextGame"
-        self.assertTrue(os.access(game, os.X_OK))
-        output = subprocess.check_output([result / "Play on Linux.sh"], cwd=self.root, text=True)
-        self.assertEqual(output, f"launched:{game}")
-
-    @unittest.skipIf(os.name == "nt", "Unix launchers require a Unix shell")
-    def test_mac_launcher_selects_architecture(self):
-        result = install_usb.install(self.usb, {
-            "mac-intel": self.make_archive("mac-intel"),
-            "mac-apple": self.make_archive("mac-apple"),
-        })
-        bin_dir = self.root / "bin"
-        bin_dir.mkdir()
-        uname = bin_dir / "uname"
-        for arch, platform in (("x86_64", "Mac-Intel"), ("arm64", "Mac-Apple")):
-            uname.write_text(f"#!/bin/sh\nprintf '{arch}\\n'\n")
-            uname.chmod(0o755)
-            env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-            output = subprocess.check_output([result / "Play on Mac.command"], env=env, text=True)
-            self.assertEqual(output, f"launched:{result / platform / 'TextGame' / 'TextGame'}")
 
     def test_refuses_to_overwrite_an_installation(self):
         existing = self.usb / "TextGameUSB"
@@ -71,27 +42,57 @@ class UsbInstallTests(unittest.TestCase):
         save = existing / "save.txt"
         save.write_text("saved")
         with self.assertRaises(FileExistsError):
-            install_usb.install(self.usb, {"windows": self.make_archive("windows")})
+            install_usb.install(self.usb, self.make_archive())
         self.assertEqual(save.read_text(), "saved")
 
     def test_invalid_archive_is_rejected_before_installation(self):
-        valid = self.make_archive("linux")
         invalid = self.root / "bad.zip"
         with zipfile.ZipFile(invalid, "w") as archive:
             archive.writestr("TextGame/../../outside", "bad")
         with self.assertRaisesRegex(ValueError, "Unsafe"):
-            install_usb.install(self.usb, {"linux": valid, "windows": invalid})
+            install_usb.install(self.usb, invalid)
         self.assertFalse((self.usb / "TextGameUSB").exists())
         self.assertFalse((self.root / "outside").exists())
 
-    def test_missing_executable_and_empty_selection_are_rejected(self):
+    def test_missing_executable_is_rejected(self):
         invalid = self.root / "bad.zip"
         with zipfile.ZipFile(invalid, "w") as archive:
             archive.writestr("TextGame/TextGame.exe", "game")
         with self.assertRaisesRegex(ValueError, "Chapter8"):
-            install_usb.install(self.usb, {"windows": invalid})
-        with self.assertRaisesRegex(ValueError, "at least one"):
-            install_usb.install(self.usb, {})
+            install_usb.install(self.usb, invalid)
+        self.assertFalse((self.usb / "TextGameUSB").exists())
+
+    def test_command_line_installs_selected_windows_archive(self):
+        subprocess.run(
+            [sys.executable, str(Path(install_usb.__file__)), str(self.usb),
+             "--windows", str(self.make_archive())],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertTrue((self.usb / "TextGameUSB/Play on Windows.bat").is_file())
+
+    def test_bundled_archive_uses_pyinstaller_directory(self):
+        with patch.object(sys, "_MEIPASS", str(self.root), create=True):
+            self.assertEqual(install_usb.bundled_archive(), self.root / install_usb.BUILD_ARCHIVE)
+
+    def test_window_installs_bundled_archive_and_reports_success(self):
+        archive = self.make_archive()
+        tkinter = MagicMock()
+        tkinter.filedialog.askdirectory.return_value = str(self.usb)
+        with patch.dict(sys.modules, {"tkinter": tkinter}), \
+             patch.object(install_usb, "bundled_archive", return_value=archive):
+            install_usb.install_with_window()
+        self.assertTrue((self.usb / "TextGameUSB/Play on Windows.bat").is_file())
+        tkinter.messagebox.showinfo.assert_called_once()
+        tkinter.Tk.return_value.destroy.assert_called_once()
+
+    def test_window_reports_installation_errors(self):
+        tkinter = MagicMock()
+        tkinter.filedialog.askdirectory.return_value = str(self.usb)
+        with patch.dict(sys.modules, {"tkinter": tkinter}), \
+             patch.object(install_usb, "bundled_archive", return_value=self.root / "missing.zip"):
+            install_usb.install_with_window()
+        tkinter.messagebox.showerror.assert_called_once()
+        tkinter.Tk.return_value.destroy.assert_called_once()
         self.assertFalse((self.usb / "TextGameUSB").exists())
 
 
