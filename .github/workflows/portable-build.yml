@@ -7,8 +7,8 @@ jobs:
   build:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: python -m pip install -r requirements-build.txt
@@ -25,7 +25,7 @@ jobs:
           --distpath portable-output/installer
           --workpath portable-output/installer-build
           --specpath portable-output/specs
-          --add-data "TextGame-windows-x86_64.zip;."
+          --add-data "../../TextGame-windows-x86_64.zip;."
           install_usb.py
       - name: Test packaged installer
         shell: pwsh
@@ -37,7 +37,7 @@ jobs:
           if (-not (Test-Path "$usb/TextGameUSB/Play on Windows.bat")) { throw "Launcher missing" }
           if (-not (Test-Path "$usb/TextGameUSB/Windows/TextGame/TextGame.exe")) { throw "Game missing" }
           if (-not (Test-Path "$usb/TextGameUSB/Windows/TextGame/Chapter8/Chapter8.exe")) { throw "Chapter 8 missing" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: Windows-USB-installer
           path: portable-output/installer/InstallTextGameToUSB.exe

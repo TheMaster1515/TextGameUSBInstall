@@ -46,7 +46,7 @@ py -3.11 build_portable.py portable-output
 cd portable-output\dist
 py -3.11 -m zipfile -c ..\..\TextGame-windows-x86_64.zip TextGame
 cd ..\..
-py -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name InstallTextGameToUSB --distpath portable-output/installer --workpath portable-output/installer-build --specpath portable-output/specs --add-data "TextGame-windows-x86_64.zip;." install_usb.py
+py -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name InstallTextGameToUSB --distpath portable-output/installer --workpath portable-output/installer-build --specpath portable-output/specs --add-data "../../TextGame-windows-x86_64.zip;." install_usb.py
 ```
 
 The `portable-output` directory must not already exist. The finished installer
